@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { repos, categories } from './data';
+import { projectDefaults } from './projectDefaults';
 import './styles.css';
 
 const STORAGE_KEY = 'trevore77-repository-admin-metadata-v1';
@@ -35,13 +36,14 @@ export default function Home() {
 
   function details(repo) {
     return {
-      status: repo.status || 'Prototype',
-      hosting: repo.hosting || 'Other',
+      status: 'Prototype',
+      hosting: 'Other',
       live: repo.live || '',
-      database: repo.database || 'none',
-      lastWorkedOn: repo.lastWorkedOn || '',
-      notes: repo.notes || '',
-      priority: repo.priority || 'Normal',
+      database: 'none',
+      lastWorkedOn: '',
+      notes: '',
+      priority: 'Normal',
+      ...(projectDefaults[repo.name] || {}),
       ...(metadata[repo.name] || {})
     };
   }
@@ -76,9 +78,8 @@ export default function Home() {
   }
 
   function startEdit(repo) {
-    const current = details(repo);
     setEditing(repo);
-    setEditForm({ ...current });
+    setEditForm({ ...details(repo) });
   }
 
   function saveEdit() {

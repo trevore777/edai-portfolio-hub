@@ -12,6 +12,11 @@ const statusOptions = ['Production', 'Development', 'Prototype', 'Paused', 'Supe
 const hostingOptions = ['AWS', 'Vercel', 'Local', 'Other'];
 const databaseOptions = ['PostgreSQL', 'Neon', 'RDS', 'none'];
 const priorityOptions = ['High', 'Normal', 'Low'];
+const emptyNewApp = {
+  name: '', category: '', visibility: 'private', status: 'Development',
+  hosting: 'Other', live: '', database: 'none', lastWorkedOn: '',
+  notes: '', priority: 'Normal', repoUrl: ''
+};
 
 export default function Home() {
   const [query, setQuery] = useState('');
@@ -24,15 +29,29 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [metadata, setMetadata] = useState({});
+  const [customApps, setCustomApps] = useState([]);
   const [editing, setEditing] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [addForm, setAddForm] = useState(emptyNewApp);
+  const [addError, setAddError] = useState('');
+  const [savingAdd, setSavingAdd] = useState(false);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) setMetadata(JSON.parse(saved));
     } catch {}
+    loadCustomApps();
   }, []);
+
+  async function loadCustomApps() {
+    try {
+      const res = await fetch('/api/apps', { cache: 'no-store' });
+      const data = await res.json();
+      if (res.ok) setCustomApps(data.apps || []);
+    } catch {}
+  }
 
   function details(repo) {
     return {
@@ -44,11 +63,26 @@ export default function Home() {
       notes: '',
       priority: 'Normal',
       ...(projectDefaults[repo.name] || {}),
+      ...(repo.custom ? repo : {}),
       ...(metadata[repo.name] || {})
     };
   }
 
-  const enrichedRepos = useMemo(() => repos.map(repo => ({ ...repo, ...details(repo) })), [metadata]);
+  const allRepos = useMemo(() => [
+    ...repos,
+    ...customApps.map(r => ({
+      ...r,
+      custom: true,
+      repoUrl: r.repoUrl || `https://github.com/trevore777/${r.name}`
+    }))
+  ], [customApps]);
+
+  const allCategories = useMemo(
+    () => ['All', ...Array.from(new Set([...categories.filter(c => c !== 'All'), ...customApps.map(a => a.category).filter(Boolean)])).sort()],
+    [customApps]
+  );
+
+  const enrichedRepos = useMemo(() => allRepos.map(repo => ({ ...repo, ...details(repo) })), [allRepos, metadata]);
 
   const filtered = useMemo(() => enrichedRepos.filter(r => {
     const haystack = `${r.name} ${r.category} ${r.status} ${r.hosting} ${r.database} ${r.notes} ${r.priority}`.toLowerCase();
@@ -101,8 +135,46 @@ export default function Home() {
     setEditForm(null);
   }
 
+  function openAddApp() {
+    setAddError('');
+    setAddForm({ ...emptyNewApp, lastWorkedOn: new Date().toISOString().slice(0, 10) });
+    setAdding(true);
+  }
+
+  async function saveNewApp() {
+    setAddError('');
+    if (!addForm.name.trim()) return setAddError('Repository / app name is required.');
+    if (!addForm.category.trim()) return setAddError('Category is required.');
+
+    setSavingAdd(true);
+    try {
+      const payload = {
+        ...addForm,
+        name: addForm.name.trim(),
+        category: addForm.category.trim(),
+        live: addForm.live.trim(),
+        repoUrl: addForm.repoUrl.trim() || `https://github.com/trevore777/${addForm.name.trim()}`,
+        notes: addForm.notes.trim()
+      };
+      const res = await fetch('/api/apps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'App could not be saved.');
+      setCustomApps(data.apps || []);
+      setAdding(false);
+      setAddForm(emptyNewApp);
+    } catch (err) {
+      setAddError(err.message);
+    } finally {
+      setSavingAdd(false);
+    }
+  }
+
   const counts = {
-    total: repos.length,
+    total: allRepos.length,
     production: enrichedRepos.filter(r => r.status === 'Production').length,
     development: enrichedRepos.filter(r => r.status === 'Development').length,
     high: enrichedRepos.filter(r => r.priority === 'High').length
@@ -116,11 +188,14 @@ export default function Home() {
           <h1>Repository Administration Hub</h1>
           <p className="subtitle">A searchable project control centre for your GitHub repositories, deployments, databases, priorities, notes and README files.</p>
         </div>
-        <a className="githubButton" href="https://github.com/trevore777" target="_blank" rel="noreferrer">Open GitHub profile ↗</a>
+        <div className="heroActions">
+          <button className="addAppButton" onClick={openAddApp}>+ Add New App</button>
+          <a className="githubButton" href="https://github.com/trevore777" target="_blank" rel="noreferrer">Open GitHub profile ↗</a>
+        </div>
       </header>
 
       <section className="stats">
-        <Stat label="Repositories" value={counts.total} />
+        <Stat label="Repositories / Apps" value={counts.total} />
         <Stat label="Production" value={counts.production} />
         <Stat label="In development" value={counts.development} />
         <Stat label="High priority" value={counts.high} />
@@ -129,7 +204,7 @@ export default function Home() {
       <section className="controls controlsExpanded">
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search repositories, status, hosting, notes…" aria-label="Search repositories" />
         <select value={category} onChange={e => setCategory(e.target.value)} aria-label="Filter by category">
-          {categories.map(c => <option key={c}>{c}</option>)}
+          {allCategories.map(c => <option key={c}>{c}</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label="Filter by status">
           <option value="all">All status</option>
@@ -146,7 +221,7 @@ export default function Home() {
         </select>
       </section>
 
-      <div className="resultLine">Showing <strong>{filtered.length}</strong> of {repos.length} repositories · edits are saved on this device</div>
+      <div className="resultLine">Showing <strong>{filtered.length}</strong> of {allRepos.length} repositories / apps · newly added apps are saved centrally on AWS</div>
 
       <section className="grid">
         {filtered.map(repo => (
@@ -154,6 +229,7 @@ export default function Home() {
             <div className="cardTop">
               <span className="category">{repo.category}</span>
               <div className="topBadges">
+                {repo.custom && <span className="badge custom">Added</span>}
                 {repo.priority === 'High' && <span className="badge priority">Priority</span>}
                 <span className={`badge ${repo.visibility}`}>{repo.visibility}</span>
               </div>
@@ -202,15 +278,7 @@ export default function Home() {
               <div><p className="eyebrow">Project administration</p><h2>{editing.name}</h2></div>
               <button className="close" onClick={() => setEditing(null)}>Close</button>
             </div>
-            <div className="editBody">
-              <label>Status<select value={editForm.status} onChange={e => setEditForm({...editForm,status:e.target.value})}>{statusOptions.map(v => <option key={v}>{v}</option>)}</select></label>
-              <label>Hosting<select value={editForm.hosting} onChange={e => setEditForm({...editForm,hosting:e.target.value})}>{hostingOptions.map(v => <option key={v}>{v}</option>)}</select></label>
-              <label>Database<select value={editForm.database} onChange={e => setEditForm({...editForm,database:e.target.value})}>{databaseOptions.map(v => <option key={v}>{v}</option>)}</select></label>
-              <label>Priority<select value={editForm.priority} onChange={e => setEditForm({...editForm,priority:e.target.value})}>{priorityOptions.map(v => <option key={v}>{v}</option>)}</select></label>
-              <label className="wideField">Live URL<input value={editForm.live} onChange={e => setEditForm({...editForm,live:e.target.value})} placeholder="https://…" /></label>
-              <label>Last worked on<input type="date" value={editForm.lastWorkedOn} onChange={e => setEditForm({...editForm,lastWorkedOn:e.target.value})} /></label>
-              <label className="wideField">Notes / To-do<textarea rows="5" value={editForm.notes} onChange={e => setEditForm({...editForm,notes:e.target.value})} placeholder="Next changes, deployment notes, issues, ideas…" /></label>
-            </div>
+            <ProjectFields form={editForm} setForm={setEditForm} categories={allCategories} showIdentity={false} />
             <div className="editActions">
               <button className="dangerButton" onClick={clearLocalEdit}>Reset to defaults</button>
               <div><button onClick={() => setEditing(null)}>Cancel</button><button className="saveButton" onClick={saveEdit}>Save details</button></div>
@@ -218,7 +286,44 @@ export default function Home() {
           </section>
         </div>
       )}
+
+      {adding && (
+        <div className="overlay" onMouseDown={() => setAdding(false)}>
+          <section className="editModal addModal" onMouseDown={e => e.stopPropagation()}>
+            <div className="modalHead">
+              <div><p className="eyebrow">Repository administration</p><h2>Add New App</h2></div>
+              <button className="close" onClick={() => setAdding(false)}>Close</button>
+            </div>
+            {addError && <div className="formError">{addError}</div>}
+            <ProjectFields form={addForm} setForm={setAddForm} categories={allCategories} showIdentity />
+            <div className="editActions">
+              <span className="saveHint">Saved to this AWS server and visible on all your devices.</span>
+              <div><button onClick={() => setAdding(false)}>Cancel</button><button className="saveButton" disabled={savingAdd} onClick={saveNewApp}>{savingAdd ? 'Saving…' : 'Add App'}</button></div>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
+  );
+}
+
+function ProjectFields({ form, setForm, categories, showIdentity }) {
+  return (
+    <div className="editBody">
+      {showIdentity && <>
+        <label>Repository / App Name<input value={form.name} onChange={e => setForm({...form,name:e.target.value})} placeholder="e.g. photo-enhancer" /></label>
+        <label>Visibility<select value={form.visibility} onChange={e => setForm({...form,visibility:e.target.value})}><option value="private">Private</option><option value="public">Public</option></select></label>
+        <label className="wideField">Category<input list="category-options" value={form.category} onChange={e => setForm({...form,category:e.target.value})} placeholder="Choose existing or type a new category" /><datalist id="category-options">{categories.filter(c => c !== 'All').map(c => <option key={c} value={c} />)}</datalist></label>
+        <label className="wideField">Repository URL<input value={form.repoUrl} onChange={e => setForm({...form,repoUrl:e.target.value})} placeholder="Leave blank to use github.com/trevore777/app-name" /></label>
+      </>}
+      <label>Status<select value={form.status} onChange={e => setForm({...form,status:e.target.value})}>{statusOptions.map(v => <option key={v}>{v}</option>)}</select></label>
+      <label>Hosting<select value={form.hosting} onChange={e => setForm({...form,hosting:e.target.value})}>{hostingOptions.map(v => <option key={v}>{v}</option>)}</select></label>
+      <label>Database<select value={form.database} onChange={e => setForm({...form,database:e.target.value})}>{databaseOptions.map(v => <option key={v}>{v}</option>)}</select></label>
+      <label>Priority<select value={form.priority} onChange={e => setForm({...form,priority:e.target.value})}>{priorityOptions.map(v => <option key={v}>{v}</option>)}</select></label>
+      <label className="wideField">Live URL<input value={form.live} onChange={e => setForm({...form,live:e.target.value})} placeholder="https://…" /></label>
+      <label>Last worked on<input type="date" value={form.lastWorkedOn} onChange={e => setForm({...form,lastWorkedOn:e.target.value})} /></label>
+      <label className="wideField">Notes / To-do<textarea rows="5" value={form.notes} onChange={e => setForm({...form,notes:e.target.value})} placeholder="Next changes, deployment notes, issues, ideas…" /></label>
+    </div>
   );
 }
 
